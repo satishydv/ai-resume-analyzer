@@ -22,16 +22,27 @@ const Upload = () => {
         setIsProcessing(true);
 
         setStatusText('Uploading the file...');
-        const uploadedFile = await fs.upload([file]);
-        if(!uploadedFile) return setStatusText('Error: Failed to upload file');
+        const uploadedFileResult = await fs.upload([file]);
+        if(!uploadedFileResult) {
+            setIsProcessing(false);
+            return setStatusText('Error: Failed to upload file');
+        }
+        const uploadedFile = Array.isArray(uploadedFileResult) ? uploadedFileResult[0] : uploadedFileResult;
 
         setStatusText('Converting to image...');
         const imageFile = await convertPdfToImage(file);
-        if(!imageFile.file) return setStatusText('Error: Failed to convert PDF to image');
+        if(!imageFile.file) {
+            setIsProcessing(false);
+            return setStatusText('Error: Failed to convert PDF to image');
+        }
 
         setStatusText('Uploading the image...');
-        const uploadedImage = await fs.upload([imageFile.file]);
-        if(!uploadedImage) return setStatusText('Error: Failed to upload image');
+        const uploadedImageResult = await fs.upload([imageFile.file]);
+        if(!uploadedImageResult) {
+            setIsProcessing(false);
+            return setStatusText('Error: Failed to upload image');
+        }
+        const uploadedImage = Array.isArray(uploadedImageResult) ? uploadedImageResult[0] : uploadedImageResult;
 
         setStatusText('Preparing data...');
         const uuid = generateUUID();
@@ -46,21 +57,41 @@ const Upload = () => {
 
         setStatusText('Analyzing...');
 
-        const feedback = await ai.feedback(
-            uploadedFile.path,
-            prepareInstructions({ jobTitle, jobDescription })
-        )
-        if (!feedback) return setStatusText('Error: Failed to analyze resume');
+        try {
+            const feedback = await ai.feedback(
+                uploadedFile.path,
+                prepareInstructions({ jobTitle, jobDescription })
+            )
+            if (!feedback) {
+                setIsProcessing(false);
+                return setStatusText('Error: Failed to analyze resume');
+            }
 
-        const feedbackText = typeof feedback.message.content === 'string'
-            ? feedback.message.content
-            : feedback.message.content[0].text;
+            let feedbackText = '';
+            if (typeof feedback.message.content === 'string') {
+                feedbackText = feedback.message.content;
+            } else if (Array.isArray(feedback.message.content) && feedback.message.content.length > 0) {
+                feedbackText = feedback.message.content[0].text || '';
+            }
 
-        data.feedback = JSON.parse(feedbackText);
-        await kv.set(`resume:${uuid}`, JSON.stringify(data));
-        setStatusText('Analysis complete, redirecting...');
-        console.log(data);
-        navigate(`/resume/${uuid}`);
+            if (!feedbackText) {
+                setIsProcessing(false);
+                return setStatusText('Error: AI returned an empty response');
+            }
+
+            // Remove potential markdown code blocks if the AI includes them
+            const cleanJson = feedbackText.replace(/```json\n?|\n?```/g, '').trim();
+            data.feedback = JSON.parse(cleanJson);
+            
+            await kv.set(`resume:${uuid}`, JSON.stringify(data));
+            setStatusText('Analysis complete, redirecting...');
+            console.log(data);
+            navigate(`/resume/${uuid}`);
+        } catch (error) {
+            console.error('Analysis error:', error);
+            setStatusText(`Error: ${error instanceof Error ? error.message : 'An unknown error occurred during analysis'}`);
+            setIsProcessing(false);
+        }
     }
 
     const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
